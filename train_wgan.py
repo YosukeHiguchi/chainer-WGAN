@@ -28,13 +28,17 @@ class WeightClipping(object):
             param.data = xp.clip(param.data, -self.threshold, self.threshold)
 
 def main():
-    parser = argparse.ArgumentParser(description='WGAN MNIST')
+    parser = argparse.ArgumentParser(description='WGAN(GP) MNIST')
+    parser.add_argument('--mode', '-m', type=str, default='WGAN',
+                    help='WGAN or WGANGP')
     parser.add_argument('--gpu', '-g', type=int, default=-1,
                     help='GPU ID (negative value indicates CPU)')
     parser.add_argument('--epoch', '-e', type=int, default=100,
                     help='number of epochs to learn')
     parser.add_argument('--batchsize', '-b', type=int, default=100,
                         help='learning minibatch size')
+    parser.add_argument('--optimizer', type=str, default='Adam',
+                        help='optimizer')
     parser.add_argument('--out', '-o', type=str, default='model',
                         help='path to the output directory')
     parser.add_argument('--dimz', '-z', type=int, default=20,
@@ -72,34 +76,56 @@ def main():
         print('GPU {}'.format(args.gpu))
     xp = np if args.gpu < 0 else cuda.cupy
 
-    opt_gen = chainer.optimizers.Adam(alpha=0.0001, beta1=0.5, beta2=0.9)
-    opt_dis = chainer.optimizers.Adam(alpha=0.0001, beta1=0.5, beta2=0.9)
-    #opt_gen = chainer.optimizers.RMSprop(5e-5)
-    opt_gen.setup(gen)
-    #opt_gen.add_hook(chainer.optimizer.GradientClipping(1))
-
-    #opt_dis = chainer.optimizers.RMSprop(5e-5)
-    opt_dis.setup(dis)
-    opt_dis.add_hook(WeightClipping(0.01))
+    if args.optimizer == 'Adam':
+        opt_gen = chainer.optimizers.Adam(alpha=0.0001, beta1=0.5, beta2=0.9)
+        opt_dis = chainer.optimizers.Adam(alpha=0.0001, beta1=0.5, beta2=0.9)
+        opt_gen.setup(gen)
+        opt_dis.setup(dis)
+        opt_dis.add_hook(WeightClipping(0.01))
+    elif args.optimizer == 'RMSprop':
+        opt_gen = chainer.optimizers.RMSprop(5e-5)
+        opt_dis = chainer.optimizers.RMSprop(5e-5)
+        opt_gen.setup(gen)
+        opt_gen.add_hook(chainer.optimizer.GradientClipping(1))
+        opt_dis.setup(dis)
+        opt_dis.add_hook(chainer.optimizer.GradientClipping(1))
+        opt_dis.add_hook(WeightClipping(0.01))
 
     train, _ = chainer.datasets.get_mnist(withlabel=False)
     train_iter = chainer.iterators.SerialIterator(train, args.batchsize, shuffle=True)
 
-    updater = WGANUpdater(
-        models=(gen, dis),
-        iterators={
-            'main': train_iter
-        },
-        optimizers={
-            'gen': opt_gen,
-            'dis': opt_dis
-        },
-        device=args.gpu,
-        params={
-            'batchsize': args.batchsize,
-            'n_latent': args.dimz,
-            'n_dis': args.n_dis
-        })
+    if args.mode == 'WGAN':
+        updater = WGANUpdater(
+            models=(gen, dis),
+            iterators={
+                'main': train_iter
+            },
+            optimizers={
+                'gen': opt_gen,
+                'dis': opt_dis
+            },
+            device=args.gpu,
+            params={
+                'batchsize': args.batchsize,
+                'n_dis': args.n_dis
+            })
+    elif args.mode == 'WGANGP':
+        updater = WGANGPUpdater(
+            models=(gen, dis),
+            iterators={
+                'main': train_iter
+            },
+            optimizers={
+                'gen': opt_gen,
+                'dis': opt_dis
+            },
+            device=args.gpu,
+            params={
+                'batchsize': args.batchsize,
+                'n_dis': args.n_dis,
+                'lam': 10
+            })
+
     trainer = training.Trainer(updater, (args.epoch, 'epoch'), out=args.out)
 
     trainer.extend(extensions.dump_graph('was. dist'))
@@ -107,14 +133,13 @@ def main():
     snapshot_interval = (args.snapepoch, 'epoch')
     trainer.extend(extensions.snapshot(filename='snapshot_epoch_{.updater.epoch}.npz'),
         trigger=snapshot_interval)
-    # trainer.extend(extensions.snapshot_object(
-    #     gen, 'gen{.updater.epoch}.npz'), trigger=snapshot_interval)
-    # trainer.extend(extensions.snapshot_object(
-    #     dis, 'dis{.updater.epoch}.npz'), trigger=snapshot_interval)
 
-    trainer.extend(extensions.PlotReport(['loss/generator'], 'epoch', file_name='generator.png'))
+    trainer.extend(extensions.PlotReport(['loss/gen'], 'epoch', file_name='generator.png'))
 
-    log_keys = ['epoch', 'iteration', 'was. dist', 'gen/loss', 'dis/loss']
+    if args.mode == 'WGAN':
+        log_keys = ['epoch', 'was. dist', 'gen/loss', 'dis/loss']
+    elif args.mode == 'WGANGP':
+        log_keys = ['epoch', 'was. dist', 'grad. pen', 'gen/loss']
     trainer.extend(extensions.LogReport(keys=log_keys))
     trainer.extend(extensions.PrintReport(log_keys))
     trainer.extend(extensions.ProgressBar(update_interval=10))
