@@ -1,2 +1,2 @@
 # chainer-WGAN
-Chainer implementations of GAN & WGAN
+Chainer implementations of WGAN & WGAN-GP
